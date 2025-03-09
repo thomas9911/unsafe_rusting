@@ -1,13 +1,13 @@
 use std::{
-    alloc::{alloc, alloc_zeroed, dealloc, handle_alloc_error, Layout},
+    // alloc::{alloc, alloc_zeroed, dealloc, handle_alloc_error, Layout},
     fmt::Debug,
 };
 
-#[derive(Debug, PartialEq)]
-pub struct Hallo {
-    value: u32,
-    extra: u8,
-}
+// #[derive(Debug, PartialEq)]
+// pub struct Hallo {
+//     value: u32,
+//     extra: u8,
+// }
 
 #[derive(Debug, PartialEq)]
 pub struct Arr<T> {
@@ -17,14 +17,11 @@ pub struct Arr<T> {
 
 impl<T> std::default::Default for Arr<T> {
     fn default() -> Self {
-        Arr {
-            next: std::ptr::null_mut(),
-            data: None,
-        }
+        Self::empty()
     }
 }
 
-impl<T: Debug> Arr<T> {
+impl<T> Arr<T> {
     pub fn new(data: T) -> Self {
         Arr {
             next: std::ptr::null_mut(),
@@ -32,44 +29,69 @@ impl<T: Debug> Arr<T> {
         }
     }
 
+    pub fn empty() -> Self {
+        Arr {
+            next: std::ptr::null_mut(),
+            data: None,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        debug_assert!(self.next.is_null());
+        self.data.is_none()
+    }
+
     pub fn append(&mut self, item: T) {
+        self.inner_append(item);
+    }
+
+    fn inner_append(&mut self, item: T) -> &mut Self {
         let new = Arr::new(item);
         let new_ptr = Box::into_raw(Box::new(new));
         let mut current = self;
         while !current.next.is_null() {
+            dbg!(&current.next);
             unsafe {
                 current = &mut *current.next;
             }
         }
         current.next = new_ptr;
+        return current;
     }
 
     pub fn pop(&mut self) -> Option<T> {
         let mut current = self;
         let mut previous = None;
-        let mut index = 0;
         while !current.next.is_null() {
-            dbg!(&current);
-            if index > 10 {
-                panic!()
-            }
             unsafe {
                 previous = Some(std::ptr::from_mut(current));
                 current = &mut *current.next;
             }
-            index += 1;
         }
 
         if let Some(previous) = previous {
             let now = unsafe { &mut *previous };
             unsafe {
-                let found = std::ptr::replace(now.next, Arr::default());
+                let found = std::ptr::replace(now.next, Arr::empty());
                 now.next = std::ptr::null_mut();
-                return Some(found.data.expect("data is not none"));
+                return found.data;
             }
         }
 
         current.data.take()
+    }
+
+    pub fn pop_front(&mut self) -> Option<T> {
+        if self.next.is_null() {
+            return self.data.take();
+        }
+
+        let item = self.data.take();
+        unsafe {
+            let new_self = std::ptr::read(self.next);
+            *self = new_self;
+        }
+        item
     }
 
     pub fn get(&self, index: usize) -> Option<&T> {
@@ -107,17 +129,20 @@ impl<T: Debug> Arr<T> {
         }
     }
 
+    pub fn push(&mut self, item: T) {
+        let mut new = Arr::new(item);
+        let new_self = Arr {
+            data: self.data.take(),
+            next: self.next,
+        };
+        let new_ptr = Box::into_raw(Box::new(new_self));
+        new.next = new_ptr;
+        *self = new;
+    }
+
     pub fn insert(&mut self, index: usize, item: T) {
         if index == 0 {
-            let mut new = Arr::new(item);
-            let new_self = Arr {
-                data: self.data.take(),
-                next: self.next
-            };
-            let new_ptr = Box::into_raw(Box::new(new_self));
-            new.next = new_ptr;
-            *self = new;
-            return
+            return self.push(item);
         }
         let mut current = self;
         for _ in 1..index {
@@ -145,15 +170,73 @@ impl<T: Debug> Arr<T> {
         }
     }
 
-    pub fn to_vec(mut self) -> Vec<T> {
-        let mut vec = Vec::new();
-        let mut index = 0;
-        while let Some(item) = self.pop() {
-            vec.push(item);
+    pub fn to_vec(self) -> Vec<T> {
+        self.into_iter().collect()
+    }
 
+    pub fn iter<'a>(&'a self) -> IterRef<'a, T> {
+        IterRef {
+            arr: self,
+            current_index: 0,
         }
-        vec.reverse();
-        vec
+    }
+}
+
+impl<A> std::iter::FromIterator<A> for Arr<A> {
+    fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
+        let mut iterator = iter.into_iter();
+        if let Some(first) = iterator.next() {
+            let mut arr = Arr::new(first);
+            let mut current = &mut arr;
+            for item in iterator {
+                // to make it more efficient, because we know where the end will be.
+                //
+                // normal append loops over the next until the end
+                //
+                // inner_append returns the last item added,
+                // so we don't need to loop to the end, we are already there
+                current = current.inner_append(item);
+            }
+            return arr;
+        } else {
+            return Arr::empty();
+        }
+    }
+}
+
+impl<T> std::iter::IntoIterator for Arr<T> {
+    type Item = T;
+    type IntoIter = Iter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Iter { arr: self }
+    }
+}
+
+pub struct Iter<T> {
+    arr: Arr<T>,
+}
+
+impl<T> std::iter::Iterator for Iter<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.arr.pop_front()
+    }
+}
+
+pub struct IterRef<'a, T> {
+    arr: &'a Arr<T>,
+    current_index: usize,
+}
+
+impl<'a, T> std::iter::Iterator for IterRef<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = self.arr.get(self.current_index);
+        self.current_index += 1;
+        item
     }
 }
 
@@ -201,13 +284,25 @@ fn arr_test() {
     assert_eq!(a.get(4), None);
     assert_eq!(a.get(1), Some(&2));
     a.append(6);
-    dbg!(&(std::ptr::addr_of!(a)));
     a.insert(0, 9);
-    dbg!(&(std::ptr::addr_of!(a)));
-    dbg!("xd");
+    a.push(8);
     a.insert(1, 1);
-    dbg!("xp");
     a.insert(3, 3);
-    dbg!("xc");
-    assert_eq!(a.to_vec(), vec![9, 1, 1, 3, 2, 3, 4, 6]);
+
+    let mut items = Vec::new();
+
+    for item in a.iter() {
+        items.push(item);
+    }
+
+    assert_eq!(items, vec![&8, &1, &9, &3, &1, &2, &3, &4, &6]);
+    assert_eq!(a.to_vec(), vec![8, 1, 9, 3, 1, 2, 3, 4, 6]);
+}
+
+#[test]
+fn arr_test_from_vec() {
+    let data = vec![1, 2, 3, 4, 5];
+    let a = Arr::from_iter(data.clone());
+
+    assert_eq!(a.to_vec(), data);
 }
